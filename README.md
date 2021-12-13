@@ -1,8 +1,6 @@
 # CS 375 - Conference App Design Document
 
-By Rodney Sampson II & Reginald Peoples
-Operating Systems - CS 375
-Dr. Ali
+By Rodney Sampson II & Reginald Peoples | Operating Systems - CS 375 | Dr. Ali
 
 ## Project Demo
 
