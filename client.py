@@ -7,8 +7,23 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter.scrolledtext import ScrolledText
 
+import socket
+import cv2
+import pickle
+import struct
+import imutils
+
+from PIL import Image
+from PIL import ImageTk
+
 FORMAT = "utf-8"
 HEADER_LENGTH = 10
+
+IS_CONNECTED = False
+IS_SHARING_VIDEO = False
+IS_SHARING_AUDIO = False
+
+CLIENT_VIDEOS = {}
 
 class App(tk.Tk):
     def __init__(self):
@@ -47,15 +62,12 @@ class App(tk.Tk):
         self.server_port_box = ttk.Entry(self, width=25, justify="center", textvariable=self.server_port)
         self.server_port_box.pack(anchor = tk.CENTER, expand = True)
 
-        self.is_connected = False
         self.connect_button = ttk.Button(self, text = "Connect", width=20, command=self.connectionHandler)
         self.connect_button.pack(anchor = tk.CENTER, expand = True)
 
-        self.sharing_video = False
         self.video_button = ttk.Button(self, text = "Share Video", width=20, command=self.videoHandler)
         self.video_button.pack(anchor = tk.CENTER, expand = True)
-
-        self.sharing_audio = False
+        
         self.audio_button = ttk.Button(self, text="Share Audio", width=20, command=self.audioHandler)
         self.audio_button.pack(anchor = tk.CENTER, expand = True)
 
@@ -76,16 +88,16 @@ class App(tk.Tk):
 
         self.messages_thread = threading.Thread(target=self.receive_message)
         self.messages_thread.start()
-    
-    def encodeStringVar(self, sv):
-        return sv.get().encode(FORMAT)
+
+        self.video_thread = threading.Thread(target=self.send_video)
+        self.video_thread.start()
 
     def connectionHandler(self):
-        if self.is_connected:
-            self.connect_button.configure(text="Connect to Server")
-            
-            self.client_socket.close()
+        global IS_CONNECTED
 
+        if IS_CONNECTED:
+            self.connect_button.configure(text="Connect to Server")
+            self.client_socket.close()
         elif self.username and self.server_ip and self.server_port:
             try:
                 self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -93,31 +105,64 @@ class App(tk.Tk):
                 self.client_socket.setblocking(False)
 
                 username_header = f"{len(self.username.get()):<{HEADER_LENGTH}}".encode(FORMAT)
+                username = self.username.get().encode(FORMAT)
 
-                temp_username = self.encodeStringVar(self.username)
+                connect_data = json.dumps({"type":"connect", "data":"Joined the room!"}).encode(FORMAT)
+                connect_header = f"{len(connect_data):<{HEADER_LENGTH}}".encode(FORMAT)
 
-                self.client_socket.send(username_header + temp_username)
+                self.client_socket.send(username_header + username)
+                self.client_socket.send(connect_header + connect_data)
 
-                self.is_connected = not self.is_connected
                 self.connect_button.configure(text="Disconnect from Server")
             except:
-                pass            
+                pass
+
+        IS_CONNECTED = not IS_CONNECTED
+
+    def send_video(self):
+        global IS_CONNECTED
+        global IS_SHARING_VIDEO
+
+        while True:
+            if IS_CONNECTED and IS_SHARING_VIDEO:
+                device = cv2.CAP_ANY
+                capture = cv2.VideoCapture(device)
+
+                if not capture.isOpened():
+                    capture.open(device)
+
+                while IS_SHARING_VIDEO and IS_CONNECTED and capture.isOpened():
+                    success, frame = capture.read()
+
+                    if IS_SHARING_VIDEO and IS_CONNECTED and success:
+                        data = {"type":"video", "data":f"{frame}"}
+                    else:
+                        data = {"type":"video", "data":None}
+
+                    message = json.dumps(data).encode(FORMAT)
+                    message_header = f"{len(message):<{HEADER_LENGTH}}".encode(FORMAT)
+                        
+                    self.client_socket.send(message_header + message)
         
     def videoHandler(self):
-        if self.sharing_video:
+        global IS_SHARING_VIDEO
+
+        if IS_SHARING_VIDEO:
             self.video_button.configure(text="Share Video")
         else:
             self.video_button.configure(text="Stop Sharing Video")
 
-        self.sharing_video = not self.sharing_video
+        IS_SHARING_VIDEO = not IS_SHARING_VIDEO
         
     def audioHandler(self):
-        if self.sharing_audio:
+        global IS_SHARING_AUDIO
+
+        if IS_SHARING_AUDIO:
             self.audio_button.configure(text="Share Audio")
         else:
             self.audio_button.configure(text="Stop Sharing Audio")
 
-        self.sharing_audio = not self.sharing_audio
+        IS_SHARING_AUDIO = not IS_SHARING_AUDIO
 
     def insertText(self, text):
         self.text_area.configure(state=tk.NORMAL)
@@ -130,8 +175,10 @@ class App(tk.Tk):
         
         self.chat_text.set("")
         self.chat_box.delete(0, len(text))
+
+        global IS_CONNECTED
         
-        if text:
+        if IS_CONNECTED and text:
             self.insertText(f"{self.username.get()}: {text}\n")
 
             data = {"type":"text", "data":f"{text}"}
@@ -145,22 +192,45 @@ class App(tk.Tk):
         while True:
             try:
                 username_header = self.client_socket.recv(HEADER_LENGTH)
-
+                
                 if not len(username_header):
-                    self.connectionHandler()
                     continue
 
                 username_length = int(username_header.decode(FORMAT).strip())
                 username = self.client_socket.recv(username_length).decode(FORMAT)
 
+                if not (username in CLIENT_VIDEOS):
+                    CLIENT_VIDEOS[username] = None
+                    
                 message_header = self.client_socket.recv(HEADER_LENGTH)
                 message_length = int(message_header.decode(FORMAT).strip())
                 message = self.client_socket.recv(message_length).decode(FORMAT)
 
                 data = json.loads(message)
-                
-                if (data["type"] == "video"):
+
+                if (data["type"] == "connect"):
+                    text = data["data"]
+                    self.insertText(f"{username}: {text}\n")
+                elif (data["type"] == "video"):
                     pass
+
+                    # frame_data = data["data"]
+                    # cv2.imshow("Receiving...", frame_data)
+
+                    # image = cv2.cvtColor(frame_data, cv2.COLOR_BGR2RGB)
+                    # image = Image.fromarray(image)
+                    # image = ImageTk.PhotoImage(image)
+
+                    # if CLIENT_VIDEOS[username]:
+                    #     window = CLIENT_VIDEOS[username]
+                    #     tk.Label(window, image=image).pack()
+                    # else:
+                    #     newWindow = tk.Toplevel(self)
+                    #     newWindow.title(username)
+                    #     newWindow.geometry("200x200")
+                    #     tk.Label(window, image=image).pack()
+                    #     CLIENT_VIDEO[username] = newWindow
+
                 elif (data["type"] == "audio"):
                     pass
                 elif (data["type"] == "text"):
